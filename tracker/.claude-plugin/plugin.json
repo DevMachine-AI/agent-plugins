@@ -1,0 +1,6 @@
+{
+  "name": "tracker",
+  "description": "Трекер задач команды: агент сам заводит, ведёт, передаёт и закрывает задачи в проектах DevMachine",
+  "author": { "name": "DevMachine" },
+  "keywords": ["tasks", "tracker", "mcp", "agents"]
+}

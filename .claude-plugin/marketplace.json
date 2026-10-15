@@ -1,0 +1,16 @@
+{
+  "name": "devmachine",
+  "owner": {
+    "name": "DevMachine"
+  },
+  "metadata": {
+    "description": "Плагины DevMachine для агентов разработки"
+  },
+  "plugins": [
+    {
+      "name": "tracker",
+      "source": "./tracker",
+      "description": "Трекер задач команды: агент сам заводит, ведёт, передаёт и закрывает задачи в проектах DevMachine"
+    }
+  ]
+}

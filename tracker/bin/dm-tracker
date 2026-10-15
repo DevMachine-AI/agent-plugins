@@ -1,0 +1,22 @@
+#!/bin/sh
+# dm-tracker launcher: finds Node 18+ and runs the bundled CLI next to this file. Without Node the MCP headers helper
+# gets {} and the hooks stay silent, so Claude Code keeps working; other commands explain what to install.
+case "$0" in */*) here=${0%/*} ;; *) here=. ;; esac
+find_node() {
+  for n in node /opt/homebrew/bin/node /usr/local/bin/node $(ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -rV); do
+    if command -v "$n" >/dev/null 2>&1; then
+      major=$("$n" -p 'process.versions.node.split(".")[0]' 2>/dev/null)
+      if [ -n "$major" ] && [ "$major" -ge 18 ]; then echo "$n"; return 0; fi
+    fi
+  done
+  return 1
+}
+if node_bin=$(find_node); then
+  exec "$node_bin" "$here/dm-tracker.mjs" "$@"
+fi
+case "$1" in
+  headers) echo '{}'; exit 0 ;;
+  hook) exit 0 ;;
+esac
+echo "dm-tracker: нужен Node.js 18+ — https://nodejs.org" >&2
+exit 1

@@ -30,7 +30,7 @@ node bin/dm-tracker.mjs install --client codex   # или cursor, devmachine (с
 брошенные задачи сервер возвращает в очередь сам.
 
 Исходник плагина — `apps/content-factory/plugins/` в монорепо; публичное зеркало обновляет
-`apps/content-factory/scripts/publish-agent-plugins.sh`.
+`apps/content-factory/scripts/publish-agent-plugins.sh` — сам, задачей CI `cf-plugins-mirror` после слияния в main.
 
 ## Импорт задач из GitLab
 

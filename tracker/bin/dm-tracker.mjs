@@ -392,6 +392,168 @@ async function importGitlab(o, fetchImpl = fetch) {
   return 0;
 }
 
+// ../tracker-domain/src/repoUrl.ts
+function normalizeRepoUrl(raw) {
+  const s = raw.trim();
+  if (!s) return null;
+  let host;
+  let path;
+  const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\d+(?:\/|$))(.+)$/.exec(s);
+  if (scp && !s.includes("://")) {
+    host = scp[1];
+    path = scp[2];
+  } else {
+    try {
+      const u = new URL(s.includes("://") ? s : `https://${s}`);
+      host = u.hostname;
+      path = u.pathname;
+    } catch {
+      return null;
+    }
+  }
+  path = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+  if (!host.includes(".") || /\s/.test(host) || path.split("/").filter(Boolean).length < 2) return null;
+  return `${host.toLowerCase()}/${path}`;
+}
+
+// src/repos.ts
+var short = (path) => path.split("/").pop() ?? path;
+var plural2 = (n) => n % 10 === 1 && n % 100 !== 11 ? "\u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0439" : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? "\u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u044F" : "\u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0435\u0432";
+async function connectRepos(o, fetchImpl = fetch) {
+  const where = parseRepo(o.group ?? o.repo ?? "");
+  if (!where) {
+    o.print(`\u041D\u0435 \u043F\u043E\u043D\u044F\u043B \u0430\u0434\u0440\u0435\u0441 ${o.group ? "\u0433\u0440\u0443\u043F\u043F\u044B" : "\u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u044F"}: ${o.group ?? o.repo ?? ""}`);
+    return 1;
+  }
+  if (!where.origin.startsWith("https://")) {
+    o.print(`GitLab \u2014 \u0442\u043E\u043B\u044C\u043A\u043E https: ${where.origin}`);
+    return 1;
+  }
+  const creds = readCredentials(o.env);
+  if (!creds) {
+    o.print("\u041D\u0435\u0442 \u0432\u0445\u043E\u0434\u0430 \u0432 \u0442\u0440\u0435\u043A\u0435\u0440 \u2014 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 dm-tracker login");
+    return 1;
+  }
+  const token = gitlabTokenFrom(o.env, where.host);
+  if (!token) {
+    o.print(`\u041D\u0435\u0442 \u0442\u043E\u043A\u0435\u043D\u0430 GitLab \u0434\u043B\u044F ${where.host}: \u0437\u0430\u0434\u0430\u0439\u0442\u0435 GITLAB_TOKEN (scope api, \u043F\u0440\u0430\u0432\u0430 Maintainer \u0432 \u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u044F\u0445) \u0438\u043B\u0438 \u0432\u043E\u0439\u0434\u0438\u0442\u0435 \u0447\u0435\u0440\u0435\u0437 glab auth login`);
+    return 1;
+  }
+  const gl = async (method, path, body) => {
+    const res = await fetchImpl(`${where.origin}/api/v4${path}`, {
+      method,
+      headers: { "PRIVATE-TOKEN": token, accept: "application/json", ...body ? { "content-type": "application/json" } : {} },
+      ...body ? { body: JSON.stringify(body) } : {},
+      signal: AbortSignal.timeout(3e4)
+    });
+    return { status: res.status, data: await res.json().catch(() => null), next: res.headers.get("x-next-page") || null };
+  };
+  const tr = async (method, path, body) => {
+    const res = await fetchImpl(`${creds.server}/api/v1/tracker/agent${path}`, {
+      method,
+      headers: { authorization: `Bearer ${creds.token}`, accept: "application/json", ...body ? { "content-type": "application/json" } : {} },
+      ...body ? { body: JSON.stringify(body) } : {},
+      signal: AbortSignal.timeout(3e4)
+    });
+    return { status: res.status, data: await res.json().catch(() => null) };
+  };
+  const why = (r) => r.data?.error?.message ?? r.data?.message ?? `\u043E\u0442\u0432\u0435\u0442 ${r.status}`;
+  const list = [];
+  if (o.group) {
+    let page = "1";
+    while (page) {
+      const r = await gl("GET", `/groups/${encodeURIComponent(where.path)}/projects?include_subgroups=${o.subgroups}&archived=false&per_page=100&page=${page}&order_by=path&sort=asc`);
+      if (r.status !== 200) {
+        o.print(`GitLab \u043D\u0435 \u043E\u0442\u0434\u0430\u043B \u0433\u0440\u0443\u043F\u043F\u0443 ${where.path}: ${why(r)}`);
+        return 1;
+      }
+      list.push(...r.data);
+      page = r.next;
+    }
+  } else {
+    const r = await gl("GET", `/projects/${encodeURIComponent(where.path)}`);
+    if (r.status !== 200) {
+      o.print(`GitLab \u043D\u0435 \u043E\u0442\u0434\u0430\u043B \u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0439 ${where.path}: ${why(r)}`);
+      return 1;
+    }
+    list.push(r.data);
+  }
+  const projects = list.filter((p) => !p.archived);
+  const known = await tr("GET", `/projects/${encodeURIComponent(o.project)}/repos`);
+  if (known.status !== 200) {
+    o.print(`\u0422\u0440\u0435\u043A\u0435\u0440 \u043E\u0442\u043A\u0430\u0437\u0430\u043B (${known.status}): ${why(known)}`);
+    return 1;
+  }
+  const byUrl = new Map(known.data.items.map((r) => [r.urlNorm, r]));
+  const total = { bound: 0, hooked: 0, skipped: 0, errors: 0 };
+  for (const p of projects) {
+    const name = short(p.path_with_namespace);
+    const norm = normalizeRepoUrl(p.web_url);
+    let repo = norm ? byUrl.get(norm) : void 0;
+    const branch = p.default_branch || "main";
+    if (repo && repo.defaultBranch !== branch) o.print(`${name} \u2014 \u043E\u0441\u043D\u043E\u0432\u043D\u0430\u044F \u0432\u0435\u0442\u043A\u0430 \u0432 \u0442\u0440\u0435\u043A\u0435\u0440\u0435 ${repo.defaultBranch}, \u0432 GitLab ${branch}: \u043F\u043E\u043F\u0440\u0430\u0432\u044C\u0442\u0435 \u0432 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u0445 \u043F\u0440\u043E\u0435\u043A\u0442\u0430`);
+    const tracked = !!repo && !!repo.hook && repo.hook.state !== "none";
+    let ours;
+    if (repo) {
+      const hooks = await gl("GET", `/projects/${p.id}/hooks?per_page=100`);
+      if (hooks.status !== 200) {
+        o.print(`${name} \u2014 \u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0440\u043E\u0447\u0438\u0442\u0430\u0442\u044C \u0432\u0435\u0431\u0445\u0443\u043A\u0438 GitLab: ${hooks.status}${hooks.status === 403 || hooks.status === 401 ? " \u2014 \u043D\u0443\u0436\u043D\u044B \u043F\u0440\u0430\u0432\u0430 Maintainer \u0432 \u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0438" : ""}`);
+        total.errors++;
+        continue;
+      }
+      const all = hooks.data;
+      ours = all.find((h2) => h2.url === `${creds.server}/api/v1/tracker/hooks/gitlab/${repo.id}`);
+      const elsewhere = !ours && all.some((h2) => h2.url.endsWith(`/api/v1/tracker/hooks/gitlab/${repo.id}`));
+      if (tracked && elsewhere) {
+        o.print(`${name} \u2014 \u0432\u0435\u0431\u0445\u0443\u043A \u0443\u0436\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D \u0441 \u0434\u0440\u0443\u0433\u0438\u043C \u0430\u0434\u0440\u0435\u0441\u043E\u043C \u0442\u0440\u0435\u043A\u0435\u0440\u0430: \u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D \u043A\u0430\u043A \u0435\u0441\u0442\u044C (\u043F\u0435\u0440\u0435\u0432\u044B\u043F\u0443\u0441\u043A \u2014 \u0432 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u0445 \u043F\u0440\u043E\u0435\u043A\u0442\u0430)`);
+        total.skipped++;
+        continue;
+      }
+    }
+    if (tracked && ours && !o.rotate) {
+      o.print(`${name} \u2014 \u0443\u0436\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D`);
+      total.skipped++;
+      continue;
+    }
+    if (o.dryRun) {
+      o.print(`${name} \u2014 ${!repo ? "\u0431\u0443\u0434\u0435\u0442 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D, \u0432\u0435\u0431\u0445\u0443\u043A \u0431\u0443\u0434\u0435\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D" : ours ? "\u0432\u0435\u0431\u0445\u0443\u043A \u0431\u0443\u0434\u0435\u0442 \u043F\u0435\u0440\u0435\u0432\u044B\u043F\u0443\u0449\u0435\u043D" : "\u0432\u0435\u0431\u0445\u0443\u043A \u0431\u0443\u0434\u0435\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D"}`);
+      continue;
+    }
+    const fresh = !repo;
+    if (!repo) {
+      const r = await tr("POST", `/projects/${encodeURIComponent(o.project)}/repos`, { url: p.web_url, defaultBranch: branch });
+      if (r.status !== 200) {
+        o.print(`${name} \u2014 \u043D\u0435 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D: ${why(r)}`);
+        total.errors++;
+        continue;
+      }
+      repo = r.data;
+      total.bound++;
+    }
+    const h = await tr("POST", `/repos/${repo.id}/hook`, {});
+    if (h.status !== 200) {
+      o.print(`${name} \u2014 ${fresh ? "\u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D, " : ""}\u0432\u0435\u0431\u0445\u0443\u043A \u043D\u0435 \u0432\u044B\u043F\u0443\u0449\u0435\u043D: ${why(h)}`);
+      total.errors++;
+      continue;
+    }
+    const hook = { url: `${creds.server}${h.data.path}`, token: h.data.secret, push_events: true, merge_requests_events: true, pipeline_events: true, enable_ssl_verification: true };
+    const put = ours ? await gl("PUT", `/projects/${p.id}/hooks/${ours.id}`, hook) : await gl("POST", `/projects/${p.id}/hooks`, hook);
+    if (put.status >= 300) {
+      o.print(`${name} \u2014 \u0441\u0435\u043A\u0440\u0435\u0442 \u0432\u044B\u043F\u0443\u0449\u0435\u043D, \u0432\u0435\u0431\u0445\u0443\u043A \u043D\u0435 \u0441\u043E\u0437\u0434\u0430\u043D: GitLab ${put.status}${put.status === 403 || put.status === 401 ? " \u2014 \u043D\u0443\u0436\u043D\u044B \u043F\u0440\u0430\u0432\u0430 Maintainer \u0432 \u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0438" : ""}`);
+      total.errors++;
+      continue;
+    }
+    total.hooked++;
+    o.print(`${name} \u2014 ${fresh ? "\u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D, \u0432\u0435\u0431\u0445\u0443\u043A \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D" : ours ? "\u0432\u0435\u0431\u0445\u0443\u043A \u043F\u0435\u0440\u0435\u0432\u044B\u043F\u0443\u0449\u0435\u043D" : "\u0432\u0435\u0431\u0445\u0443\u043A \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D"}`);
+  }
+  if (o.dryRun) {
+    o.print(`${projects.length} ${plural2(projects.length)} \u0438\u0437 ${where.path} \u2192 ${o.project} (\u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430, \u043D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u043E)`);
+    return 0;
+  }
+  o.print(`\u0418\u0442\u043E\u0433\u043E: \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u043E ${total.bound}, \u0432\u0435\u0431\u0445\u0443\u043A\u043E\u0432 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u043E ${total.hooked}, \u043F\u0440\u043E\u043F\u0443\u0449\u0435\u043D\u043E ${total.skipped}, \u043E\u0448\u0438\u0431\u043E\u043A ${total.errors}`);
+  return total.errors ? 1 : 0;
+}
+
 // src/install.ts
 import { cpSync, existsSync as existsSync3, mkdirSync as mkdirSync4, readFileSync as readFileSync5, readdirSync as readdirSync2 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
@@ -540,12 +702,23 @@ async function main(argv, env = process.env, print = (s) => process.stdout.write
       }
       return importGitlab({ project: project.toUpperCase(), repo, milestones: args.includes("--milestones"), state, dryRun: args.includes("--dry-run"), env, print });
     }
+    // dm-tracker repos connect --project FAR --group <адрес группы GitLab> | --repo <url> [--no-subgroups] [--rotate] [--dry-run] (T6)
+    case "repos": {
+      const project = flag(args, "project");
+      const group = flag(args, "group");
+      const repo = flag(args, "repo");
+      if (args[0] !== "connect" || !project || !!group === !!repo) {
+        print("dm-tracker repos connect --project <\u041A\u041B\u042E\u0427> --group <\u0430\u0434\u0440\u0435\u0441 \u0433\u0440\u0443\u043F\u043F\u044B GitLab> | --repo <url> [--no-subgroups] [--rotate] [--dry-run]");
+        return 1;
+      }
+      return connectRepos({ project: project.toUpperCase(), ...group ? { group } : {}, ...repo ? { repo } : {}, subgroups: !args.includes("--no-subgroups"), rotate: args.includes("--rotate"), dryRun: args.includes("--dry-run"), env, print });
+    }
     case "--version":
     case "version":
       print(VERSION);
       return 0;
     default:
-      print("dm-tracker login | logout | doctor | install --client codex|cursor|devmachine | import gitlab --project <\u041A\u041B\u042E\u0427> --repo <url> | headers | token | hook <event> | --version");
+      print("dm-tracker login | logout | doctor | install --client codex|cursor|devmachine | import gitlab --project <\u041A\u041B\u042E\u0427> --repo <url> | repos connect --project <\u041A\u041B\u042E\u0427> --group <url> | headers | token | hook <event> | --version");
       return cmd ? 1 : 0;
   }
 }

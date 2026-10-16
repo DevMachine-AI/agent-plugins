@@ -42,6 +42,16 @@ node bin/dm-tracker.mjs import gitlab --project DM --repo https://gitlab.example
 node bin/dm-tracker.mjs import gitlab --project DM --repo https://gitlab.example.com/group/app --milestones
 ```
 
+Проект из многих репозиториев одной группы GitLab руководитель привязывает тоже одной командой: каждый репозиторий
+группы (с подгруппами, без архивных) добавляется в проект, трекер выпускает секрет вебхука, команда создаёт вебхук в
+GitLab (Push, Merge request, Pipeline). Нужен токен GitLab со scope `api` и права Maintainer; секрет не печатается,
+повторный запуск пропускает подключённые, `--rotate` перевыпускает:
+
+```
+node bin/dm-tracker.mjs repos connect --project FAR --group https://gitlab.example.com/faraday --dry-run
+node bin/dm-tracker.mjs repos connect --project FAR --group https://gitlab.example.com/faraday
+```
+
 `--dry-run` показывает, что перенесётся, и ничего не отправляет. По умолчанию — открытые задачи, `--state all` — и
 закрытые (они попадут в «Готово»). `--milestones` делает из вех эпики (эпик с тем же названием используется). Повторный
 запуск не создаёт копий — уже перенесённые пропускаются; изменения в GitLab после переноса не подтягиваются.

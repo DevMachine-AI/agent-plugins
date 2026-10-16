@@ -244,6 +244,7 @@ ${git2}`.slice(0, 1e4) } });
 }
 
 // src/import.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync as readFileSync4 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
@@ -282,27 +283,62 @@ function parseRepo(url) {
     return null;
   }
 }
-function gitlabTokenFrom(env, host) {
+function gitlabTokenFrom(env, host, askGlab = glabToken) {
   if (env.GITLAB_TOKEN) return env.GITLAB_TOKEN;
-  const dir = env.GLAB_CONFIG_DIR || join4(env.XDG_CONFIG_HOME || join4(env.HOME || homedir3(), ".config"), "glab-cli");
-  let text;
-  try {
-    text = readFileSync4(join4(dir, "config.yml"), "utf8");
-  } catch {
-    return null;
-  }
-  const lines = text.split("\n");
-  const start = lines.findIndex((l) => /^hosts:\s*$/.test(l));
-  if (start < 0) return null;
-  for (let i = start + 1; i < lines.length && /^\s/.test(lines[i]); i++) {
-    const m = /^(\s+)(\S+?):\s*$/.exec(lines[i]);
-    if (!m || m[2] !== host) continue;
-    for (let j = i + 1; j < lines.length && (lines[j].match(/^\s*/)[0].length > m[1].length || !lines[j].trim()); j++) {
-      const t = /^\s+token:\s*["']?([^"'\s]+)["']?\s*$/.exec(lines[j]);
-      if (t) return t[1];
+  const home = env.HOME || homedir3();
+  const dirs = env.GLAB_CONFIG_DIR ? [env.GLAB_CONFIG_DIR] : [join4(env.XDG_CONFIG_HOME || join4(home, ".config"), "glab-cli"), join4(home, "Library", "Application Support", "glab-cli")];
+  const known = /* @__PURE__ */ new Map();
+  for (const dir of dirs) {
+    let text;
+    try {
+      text = readFileSync4(join4(dir, "config.yml"), "utf8");
+    } catch {
+      continue;
     }
+    for (const [h, t] of glabHosts(text)) if (!known.get(h)) known.set(h, t);
+  }
+  const ported = host.includes(":") ? [] : [...known.keys()].filter((h) => h.startsWith(`${host}:`));
+  const names = [host, ...ported.length === 1 ? ported : []];
+  for (const h of names) {
+    const t = known.get(h);
+    if (t) return t;
+  }
+  for (const h of names) {
+    const t = askGlab(h);
+    if (t) return t;
   }
   return null;
+}
+function glabToken(host) {
+  try {
+    return execFileSync2("glab", ["config", "get", "token", "--host", host], { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
+function glabHosts(text) {
+  const out = /* @__PURE__ */ new Map();
+  const lines = text.split("\n");
+  const start = lines.findIndex((l) => /^hosts:\s*$/.test(l));
+  if (start < 0) return out;
+  const indent = (l) => l.match(/^\s*/)[0].length;
+  let level = -1;
+  for (let i = start + 1; i < lines.length && (/^\s/.test(lines[i]) || !lines[i].trim()); i++) {
+    const m = /^(\s+)(\S+?):\s*$/.exec(lines[i]);
+    if (!m) continue;
+    if (level < 0) level = m[1].length;
+    if (m[1].length !== level) continue;
+    let token = null;
+    for (let j = i + 1; j < lines.length && (indent(lines[j]) > level || !lines[j].trim()); j++) {
+      const t = /^\s+token:\s*["']?([^"'\s]+)["']?\s*$/.exec(lines[j]);
+      if (t) {
+        token = t[1];
+        break;
+      }
+    }
+    out.set(m[2], token);
+  }
+  return out;
 }
 var TYPE = { bug: "\u041E\u0448\u0438\u0431\u043A\u0430", task: "\u0417\u0430\u0434\u0430\u0447\u0430" };
 var cut = (s, n) => s.length > n ? `${s.slice(0, n - 1)}\u2026` : s;

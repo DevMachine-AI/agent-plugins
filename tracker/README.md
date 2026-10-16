@@ -44,7 +44,8 @@ node bin/dm-tracker.mjs import gitlab --project DM --repo https://gitlab.example
 
 Проект из многих репозиториев одной группы GitLab руководитель привязывает тоже одной командой: каждый репозиторий
 группы (с подгруппами, без архивных) добавляется в проект, трекер выпускает секрет вебхука, команда создаёт вебхук в
-GitLab (Push, Merge request, Pipeline). Нужен токен GitLab со scope `api` и права Maintainer; секрет не печатается,
+GitLab (Push, Merge request, Pipeline). Нужен токен GitLab со scope `api` и права Maintainer (`GITLAB_TOKEN` или вход
+`glab auth login` — и токен в связке ключей macOS, его спросят у самого glab); секрет не печатается,
 повторный запуск пропускает подключённые, `--rotate` перевыпускает:
 
 ```

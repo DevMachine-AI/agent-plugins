@@ -194,7 +194,8 @@ async function runHook(event, stdin, d) {
     const creds = readCredentials(d.env);
     const repo = repoOf(input.cwd || process.cwd());
     if (!creds || !repo) return "";
-    const post = (path, extra = {}) => request(`${creds.server}/api/v1/tracker/agent/${path}`, { token: creds.token, json: { repoUrl: repo.url, branch: repo.branch, ...extra }, timeoutMs: HOOK_TIMEOUT_MS });
+    const ref = input.session_id ? { clientSessionRef: input.session_id } : {};
+    const post = (path, extra = {}) => request(`${creds.server}/api/v1/tracker/agent/${path}`, { token: creds.token, json: { repoUrl: repo.url, branch: repo.branch, ...ref, ...extra }, timeoutMs: HOOK_TIMEOUT_MS });
     const cacheDir = d.env.CLAUDE_PLUGIN_DATA || join3(d.env.HOME || homedir2(), ".cache", "dm-tracker");
     const usage = async (final) => {
       if (!input.transcript_path) return;

@@ -22,12 +22,15 @@
 ## Codex, Cursor, DevMachine
 
 ```
-node bin/dm-tracker.mjs login
-node bin/dm-tracker.mjs install --client codex   # или cursor, devmachine (старое имя koder тоже работает)
+curl -fsSL --create-dirs -o ~/.dm-tracker/dm-tracker.mjs https://raw.githubusercontent.com/devmachine-ai/agent-plugins/main/tracker/bin/dm-tracker.mjs
+node ~/.dm-tracker/dm-tracker.mjs connect --client devmachine   # или codex, cursor (старое имя koder тоже работает)
 ```
 
-Навыки встают в `~/.agents/skills/`, команда печатает настройку MCP и блок для `AGENTS.md`. Хуков у этих клиентов нет —
-брошенные задачи сервер возвращает в очередь сам.
+`connect` — вход через браузер, навыки и проверка одной командой; `dm-tracker.mjs` несёт навыки в себе, поэтому
+хватает одного файла. DevMachine после этого просто перезапустить: навыки встают в `~/.koder/skills/`, MCP трекера с
+токеном — в `~/.koder/mcp.json` (повторный вход обновляет токен там же). Codex и Cursor: навыки — в `~/.agents/skills/`,
+команда печатает настройку MCP и блок для `AGENTS.md`, их вставляют руками. Хуков у этих клиентов нет — брошенные
+задачи сервер возвращает в очередь сам.
 
 Исходник плагина — `apps/content-factory/plugins/` в монорепо; публичное зеркало обновляет
 `apps/content-factory/scripts/publish-agent-plugins.sh` — сам, задачей CI `cf-plugins-mirror` после слияния в main.

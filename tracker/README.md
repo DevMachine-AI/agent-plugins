@@ -13,7 +13,9 @@
 /tracker-setup
 ```
 
-Нужен Node.js 18+ (для `dm-tracker`). Сервер по умолчанию — `https://office.devmachine.ai`; свой сервер — переменная
+Нужен Node.js 18+ (для `dm-tracker`). Агент входит через `dm-tracker login --no-wait`: ссылка и код печатаются сразу,
+подтверждения ждёт фоновый процесс, итог — `dm-tracker login --status`. Обычный `login` ждёт подтверждения сам и годится
+для своего терминала: у агента вывод команды приходит только по её окончании, и код доходил до человека уже истёкшим. Сервер по умолчанию — `https://office.devmachine.ai`; свой сервер — переменная
 `DM_TRACKER_URL` (адрес MCP) и `dm-tracker login --server …`.
 
 Что внутри: MCP `tracker` (токен подставляет `dm-tracker headers`), хуки `SessionStart` / `PostToolUse` / `Stop`,

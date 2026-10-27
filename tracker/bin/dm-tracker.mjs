@@ -5,7 +5,7 @@ var define_ASSETS_default = { skills: { "tracker-finish": { "SKILL.md": "---\nna
 
 // src/main.ts
 import { spawn } from "node:child_process";
-import { readFileSync as readFileSync7 } from "node:fs";
+import { readFileSync as readFileSync8 } from "node:fs";
 
 // src/api.ts
 var HttpError = class extends Error {
@@ -59,10 +59,28 @@ function removeCredentials(env) {
 }
 
 // src/device.ts
+import { chmodSync as chmodSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { hostname } from "node:os";
-async function login(d) {
+import { dirname as dirname2, join as join2 } from "node:path";
+var loginStatePath = (env) => join2(dirname2(credentialsPath(env)), "login.json");
+function readLoginState(env) {
+  try {
+    return JSON.parse(readFileSync2(loginStatePath(env), "utf8"));
+  } catch {
+    return null;
+  }
+}
+function writeLoginState(env, s) {
+  const p = loginStatePath(env);
+  mkdirSync2(dirname2(p), { recursive: true, mode: 448 });
+  writeFileSync2(p, JSON.stringify(s, null, 2) + "\n", { mode: 384 });
+  chmodSync2(p, 384);
+}
+function removeLoginState(env) {
+  rmSync2(loginStatePath(env), { force: true });
+}
+async function startLogin(d) {
   const server = d.server.replace(/\/$/, "");
-  const sleep = d.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const print = d.print ?? ((s) => process.stdout.write(s + "\n"));
   const cfg = await request(`${server}/api/v1/tracker/cli-config`);
   const oidc = `${cfg.issuer.replace(/\/$/, "")}/protocol/openid-connect`;
@@ -72,21 +90,39 @@ async function login(d) {
   const link = dev.verification_uri_complete ?? dev.verification_uri;
   print(`\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 ${link} \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u043A\u043E\u0434 ${dev.user_code}`);
   d.open?.(link);
-  let interval = (dev.interval ?? 5) * 1e3;
-  const deadline = Date.now() + dev.expires_in * 1e3;
+  return {
+    status: "pending",
+    server,
+    oidc,
+    clientId: cfg.clientId,
+    deviceCode: dev.device_code,
+    userCode: dev.user_code,
+    link,
+    interval: dev.interval ?? 5,
+    expiresAt: new Date(Date.now() + dev.expires_in * 1e3).toISOString(),
+    ...d.name ? { name: d.name } : {},
+    ...d.profiles ? { profiles: d.profiles } : {}
+  };
+}
+async function finishLogin(s, d) {
+  const sleep = d.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const print = d.print ?? ((s2) => process.stdout.write(s2 + "\n"));
+  let interval = s.interval * 1e3;
+  const deadline = new Date(s.expiresAt).getTime();
   for (; ; ) {
     await sleep(interval);
+    if (d.stillMine && !d.stillMine()) return false;
     try {
-      const tok = await request(`${oidc}/token`, {
-        form: { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: dev.device_code, client_id: cfg.clientId }
+      const tok = await request(`${s.oidc}/token`, {
+        form: { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: s.deviceCode, client_id: s.clientId }
       });
-      const minted = await request(`${server}/api/v1/tracker/agent-tokens/personal`, {
+      const minted = await request(`${s.server}/api/v1/tracker/agent-tokens/personal`, {
         token: tok.access_token,
-        json: { name: d.name ?? hostname(), ...d.profiles ? { profiles: d.profiles } : {} }
+        json: { name: s.name ?? hostname(), ...s.profiles ? { profiles: s.profiles } : {} }
       });
-      writeCredentials(d.env, { server, token: minted.token, tokenId: minted.id, expiresAt: minted.expiresAt });
-      print(`\u0413\u043E\u0442\u043E\u0432\u043E: \u0430\u0433\u0435\u043D\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D \u043A ${server} \u0434\u043E ${minted.expiresAt.slice(0, 10)}`);
-      return;
+      writeCredentials(d.env, { server: s.server, token: minted.token, tokenId: minted.id, expiresAt: minted.expiresAt });
+      print(`\u0413\u043E\u0442\u043E\u0432\u043E: \u0430\u0433\u0435\u043D\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D \u043A ${s.server} \u0434\u043E ${minted.expiresAt.slice(0, 10)}`);
+      return true;
     } catch (e) {
       const code = e instanceof HttpError ? e.body?.error : void 0;
       if (code === "authorization_pending") continue;
@@ -98,6 +134,36 @@ async function login(d) {
       throw e;
     }
   }
+}
+async function login(d) {
+  await finishLogin(await startLogin(d), d);
+}
+async function loginNoWait(d) {
+  const print = d.print ?? ((s2) => process.stdout.write(s2 + "\n"));
+  const s = await startLogin(d);
+  writeLoginState(d.env, s);
+  d.spawnWaiter();
+  print(`\u041A\u043E\u0434 \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u0434\u043E ${new Date(s.expiresAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}. \u041F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u0435 \u0436\u0434\u0451\u0442 \u0444\u043E\u043D\u043E\u0432\u044B\u0439 \u043F\u0440\u043E\u0446\u0435\u0441\u0441; \u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C: dm-tracker login --status`);
+}
+async function resumeLogin(d) {
+  const s = readLoginState(d.env);
+  if (!s || s.status !== "pending") return;
+  const stillMine = () => readLoginState(d.env)?.deviceCode === s.deviceCode;
+  try {
+    if (!await finishLogin(s, { env: d.env, ...d.sleep ? { sleep: d.sleep } : {}, print: () => void 0, stillMine })) return;
+    if (stillMine()) writeLoginState(d.env, { ...s, status: "done", deviceCode: "" });
+    d.onDone?.();
+  } catch (e) {
+    if (stillMine()) writeLoginState(d.env, { ...s, status: "failed", deviceCode: "", error: e.message });
+  }
+}
+function loginStatus(env, now = Date.now()) {
+  const s = readLoginState(env);
+  if (!s) return { status: "none" };
+  if (s.status === "done") return { status: "done", server: s.server };
+  if (s.status === "failed") return { status: "failed", error: s.error ?? "\u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430\u044F \u043E\u0448\u0438\u0431\u043A\u0430" };
+  if (now > new Date(s.expiresAt).getTime()) return { status: "expired" };
+  return { status: "pending", link: s.link, userCode: s.userCode, expiresAt: s.expiresAt };
 }
 
 // src/git.ts
@@ -122,17 +188,17 @@ function repoOf(cwd) {
 }
 
 // src/hooks.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join3 } from "node:path";
+import { join as join4 } from "node:path";
 
 // src/usage.ts
-import { closeSync, existsSync as existsSync2, mkdirSync as mkdirSync2, openSync, readdirSync, readFileSync as readFileSync2, readSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { basename, dirname as dirname2, join as join2 } from "node:path";
+import { closeSync, existsSync as existsSync2, mkdirSync as mkdirSync3, openSync, readdirSync, readFileSync as readFileSync3, readSync, statSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { basename, dirname as dirname3, join as join3 } from "node:path";
 function readFile(path, cachePath) {
   let cache = { offset: 0, messages: {} };
   try {
-    cache = JSON.parse(readFileSync2(cachePath, "utf8"));
+    cache = JSON.parse(readFileSync3(cachePath, "utf8"));
   } catch {
   }
   const size = statSync(path).size;
@@ -158,8 +224,8 @@ function readFile(path, cachePath) {
       }
     }
     cache.offset += end;
-    mkdirSync2(dirname2(cachePath), { recursive: true });
-    writeFileSync2(cachePath, JSON.stringify(cache));
+    mkdirSync3(dirname3(cachePath), { recursive: true });
+    writeFileSync3(cachePath, JSON.stringify(cache));
   }
   return Object.values(cache.messages);
 }
@@ -168,14 +234,14 @@ async function readUsage(transcriptPath, cacheDir) {
   if (!existsSync2(transcriptPath)) return [];
   const session = basename(transcriptPath, ".jsonl");
   const files2 = [transcriptPath];
-  const sub = join2(dirname2(transcriptPath), session, "subagents");
+  const sub = join3(dirname3(transcriptPath), session, "subagents");
   try {
-    for (const f of readdirSync(sub).sort()) if (f.endsWith(".jsonl")) files2.push(join2(sub, f));
+    for (const f of readdirSync(sub).sort()) if (f.endsWith(".jsonl")) files2.push(join3(sub, f));
   } catch {
   }
   const totals = /* @__PURE__ */ new Map();
   for (const f of files2) {
-    const cache = join2(cacheDir, `usage-${safe(session)}${f === transcriptPath ? "" : `-${safe(basename(f, ".jsonl"))}`}.json`);
+    const cache = join3(cacheDir, `usage-${safe(session)}${f === transcriptPath ? "" : `-${safe(basename(f, ".jsonl"))}`}.json`);
     for (const u of readFile(f, cache)) {
       const t = totals.get(u.model) ?? { model: u.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
       t.input += u.input;
@@ -199,7 +265,7 @@ async function runHook(event, stdin, d) {
     if (!creds || !repo) return "";
     const ref = input.session_id ? { clientSessionRef: input.session_id } : {};
     const post = (path, extra = {}) => request(`${creds.server}/api/v1/tracker/agent/${path}`, { token: creds.token, json: { repoUrl: repo.url, branch: repo.branch, ...ref, ...extra }, timeoutMs: HOOK_TIMEOUT_MS });
-    const cacheDir = d.env.CLAUDE_PLUGIN_DATA || join3(d.env.HOME || homedir2(), ".cache", "dm-tracker");
+    const cacheDir = d.env.CLAUDE_PLUGIN_DATA || join4(d.env.HOME || homedir2(), ".cache", "dm-tracker");
     const usage = async (final) => {
       if (!input.transcript_path) return;
       const totals = await readUsage(input.transcript_path, cacheDir);
@@ -218,16 +284,16 @@ ${git2}`.slice(0, 1e4) } });
     }
     if (event === "post-tool-use") {
       const dir = cacheDir;
-      const stamp = join3(dir, `heartbeat-${(input.session_id ?? "default").replace(/[^\w-]/g, "_")}`);
+      const stamp = join4(dir, `heartbeat-${(input.session_id ?? "default").replace(/[^\w-]/g, "_")}`);
       const now = (d.now ?? Date.now)();
       let last = 0;
       try {
-        last = Number(readFileSync3(stamp, "utf8")) || 0;
+        last = Number(readFileSync4(stamp, "utf8")) || 0;
       } catch {
       }
       if (now - last < HEARTBEAT_EVERY_MS) return "";
-      mkdirSync3(dir, { recursive: true });
-      writeFileSync3(stamp, String(now));
+      mkdirSync4(dir, { recursive: true });
+      writeFileSync4(stamp, String(now));
       await post("heartbeat");
       return "";
     }
@@ -250,9 +316,9 @@ ${git2}`.slice(0, 1e4) } });
 // src/import.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 
 // ../tracker-domain/src/constants.ts
 var IMPORT_LIMITS = { batch: 50, run: 5e3 };
@@ -290,12 +356,12 @@ function parseRepo(url) {
 function gitlabTokenFrom(env, host, askGlab = glabToken) {
   if (env.GITLAB_TOKEN) return env.GITLAB_TOKEN;
   const home = env.HOME || homedir3();
-  const dirs = env.GLAB_CONFIG_DIR ? [env.GLAB_CONFIG_DIR] : [join4(env.XDG_CONFIG_HOME || join4(home, ".config"), "glab-cli"), join4(home, "Library", "Application Support", "glab-cli")];
+  const dirs = env.GLAB_CONFIG_DIR ? [env.GLAB_CONFIG_DIR] : [join5(env.XDG_CONFIG_HOME || join5(home, ".config"), "glab-cli"), join5(home, "Library", "Application Support", "glab-cli")];
   const known = /* @__PURE__ */ new Map();
   for (const dir of dirs) {
     let text;
     try {
-      text = readFileSync4(join4(dir, "config.yml"), "utf8");
+      text = readFileSync5(join5(dir, "config.yml"), "utf8");
     } catch {
       continue;
     }
@@ -595,17 +661,17 @@ async function connectRepos(o, fetchImpl = fetch) {
 }
 
 // src/devmachine.ts
-import { chmodSync as chmodSync2, existsSync as existsSync3, mkdirSync as mkdirSync4, readFileSync as readFileSync5, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { chmodSync as chmodSync3, existsSync as existsSync3, mkdirSync as mkdirSync5, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
-import { dirname as dirname3, join as join5 } from "node:path";
-var koderHome = (env) => join5(env.HOME || homedir4(), ".koder");
-var koderSkillsDir = (env) => join5(koderHome(env), "skills");
-var koderMcpFile = (env) => join5(koderHome(env), "mcp.json");
+import { dirname as dirname4, join as join6 } from "node:path";
+var koderHome = (env) => join6(env.HOME || homedir4(), ".koder");
+var koderSkillsDir = (env) => join6(koderHome(env), "skills");
+var koderMcpFile = (env) => join6(koderHome(env), "mcp.json");
 var isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function readMcp(file) {
   if (!existsSync3(file)) return {};
   try {
-    const raw = JSON.parse(readFileSync5(file, "utf8"));
+    const raw = JSON.parse(readFileSync6(file, "utf8"));
     return isObject(raw) ? raw : null;
   } catch {
     return null;
@@ -626,10 +692,10 @@ function writeTrackerMcp(env, server, token) {
   const prev = isObject(mcp.tracker) ? mcp.tracker : {};
   const headers = isObject(prev.headers) ? prev.headers : {};
   mcp.tracker = { ...prev, type: "remote", url: `${server}/mcp/tracker`, headers: { ...headers, Authorization: `Bearer ${token}` } };
-  mkdirSync4(dirname3(file), { recursive: true });
+  mkdirSync5(dirname4(file), { recursive: true });
   const tmp = `${file}.dm-tracker.tmp`;
-  writeFileSync4(tmp, JSON.stringify({ ...raw, mcp }, null, 2) + "\n", { mode: 384 });
-  chmodSync2(tmp, 384);
+  writeFileSync5(tmp, JSON.stringify({ ...raw, mcp }, null, 2) + "\n", { mode: 384 });
+  chmodSync3(tmp, 384);
   renameSync(tmp, file);
   return true;
 }
@@ -647,33 +713,33 @@ function trackerMcpState(env, c) {
 }
 
 // src/install.ts
-import { mkdirSync as mkdirSync5, writeFileSync as writeFileSync5 } from "node:fs";
+import { mkdirSync as mkdirSync6, writeFileSync as writeFileSync6 } from "node:fs";
 import { homedir as homedir5 } from "node:os";
-import { dirname as dirname4, join as join7 } from "node:path";
+import { dirname as dirname5, join as join8 } from "node:path";
 
 // src/assets.ts
-import { existsSync as existsSync4, readFileSync as readFileSync6, readdirSync as readdirSync2, statSync as statSync2 } from "node:fs";
-import { join as join6, relative } from "node:path";
+import { existsSync as existsSync4, readFileSync as readFileSync7, readdirSync as readdirSync2, statSync as statSync2 } from "node:fs";
+import { join as join7, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 function files(dir, root = dir) {
   const out = {};
   for (const n of readdirSync2(dir).sort()) {
-    const p = join6(dir, n);
+    const p = join7(dir, n);
     if (statSync2(p).isDirectory()) Object.assign(out, files(p, root));
-    else out[relative(root, p).split("\\").join("/")] = readFileSync6(p, "utf8");
+    else out[relative(root, p).split("\\").join("/")] = readFileSync7(p, "utf8");
   }
   return out;
 }
 function readAssets(root) {
   const skills = {};
-  for (const n of readdirSync2(join6(root, "skills")).sort())
-    if (existsSync4(join6(root, "skills", n, "SKILL.md"))) skills[n] = files(join6(root, "skills", n));
-  return { skills, agentsSnippet: readFileSync6(join6(root, "universal", "AGENTS.md.snippet"), "utf8") };
+  for (const n of readdirSync2(join7(root, "skills")).sort())
+    if (existsSync4(join7(root, "skills", n, "SKILL.md"))) skills[n] = files(join7(root, "skills", n));
+  return { skills, agentsSnippet: readFileSync7(join7(root, "universal", "AGENTS.md.snippet"), "utf8") };
 }
 function loadAssets() {
   if (typeof define_ASSETS_default === "object" && define_ASSETS_default) return define_ASSETS_default;
   const root = fileURLToPath(new URL("../../../plugins/tracker/", import.meta.url));
-  if (!existsSync4(join6(root, "skills"))) throw new Error("the tracker skills are not found next to dm-tracker");
+  if (!existsSync4(join7(root, "skills"))) throw new Error("the tracker skills are not found next to dm-tracker");
   return readAssets(root);
 }
 
@@ -683,7 +749,7 @@ function installClient(name) {
   if (name === "koder") return "devmachine";
   return CLIENTS.includes(name ?? "") ? name : null;
 }
-var SKILLS_DIR = (env) => join7(env.HOME || homedir5(), ".agents", "skills");
+var SKILLS_DIR = (env) => join8(env.HOME || homedir5(), ".agents", "skills");
 var skillsDir = (client, env) => client === "devmachine" ? koderSkillsDir(env) : SKILLS_DIR(env);
 function mcpSnippet(client, server) {
   const url = `${server}/mcp/tracker`;
@@ -707,9 +773,9 @@ function install(client, o) {
   const names = Object.keys(assets.skills);
   for (const n of names)
     for (const [rel, text] of Object.entries(assets.skills[n])) {
-      const p = join7(target, n, ...rel.split("/"));
-      mkdirSync5(dirname4(p), { recursive: true });
-      writeFileSync5(p, text);
+      const p = join8(target, n, ...rel.split("/"));
+      mkdirSync6(dirname5(p), { recursive: true });
+      writeFileSync6(p, text);
     }
   o.print(`\u041D\u0430\u0432\u044B\u043A\u0438 \u0442\u0440\u0435\u043A\u0435\u0440\u0430: ${names.join(", ")} \u2192 ${target}`);
   if (client === "devmachine") {
@@ -756,10 +822,37 @@ var openBrowser = (url) => {
   }
 };
 var RELOGIN_MS = 7 * 24 * 3600 * 1e3;
-async function signIn(server, args, env, print) {
-  await login({ server, env, print, open: openBrowser, ...flag(args, "name") ? { name: flag(args, "name") } : {}, ...flag(args, "profiles") ? { profiles: flag(args, "profiles").split(",") } : {} });
+var loginOpts = (args) => ({ ...flag(args, "name") ? { name: flag(args, "name") } : {}, ...flag(args, "profiles") ? { profiles: flag(args, "profiles").split(",") } : {} });
+function refreshDevMachine(env, print) {
   const c = readCredentials(env);
   if (c && refreshTrackerMcp(env, c.server, c.token)) print("\u0422\u043E\u043A\u0435\u043D \u043E\u0431\u043D\u043E\u0432\u043B\u0451\u043D \u0438 \u0432 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u0445 MCP DevMachine");
+}
+async function signIn(server, args, env, print) {
+  await login({ server, env, print, open: openBrowser, ...loginOpts(args) });
+  refreshDevMachine(env, print);
+}
+var spawnWaiter = (env) => () => {
+  spawn(process.execPath, [process.argv[1], "login", "--resume"], { stdio: "ignore", detached: true, env }).unref();
+};
+function printLoginStatus(env, print) {
+  const st = loginStatus(env);
+  switch (st.status) {
+    case "done":
+      print(`\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D: ${st.server}`);
+      return 0;
+    case "pending":
+      print(`\u0416\u0434\u0451\u043C \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u044F: \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 ${st.link} \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u043A\u043E\u0434 ${st.userCode} (\u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u0434\u043E ${new Date(st.expiresAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })})`);
+      return 2;
+    case "expired":
+      print("\u041A\u043E\u0434 \u0438\u0441\u0442\u0451\u043A \u2014 \u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u0435 dm-tracker login --no-wait \u0437\u0430\u043D\u043E\u0432\u043E");
+      return 1;
+    case "failed":
+      print(`\u0412\u0445\u043E\u0434 \u043D\u0435 \u0443\u0434\u0430\u043B\u0441\u044F: ${st.error}`);
+      return 1;
+    default:
+      print(readCredentials(env) ? "\u0412\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D \u0440\u0430\u043D\u0435\u0435; \u043D\u043E\u0432\u044B\u0445 \u043F\u043E\u043F\u044B\u0442\u043E\u043A \u0432\u0445\u043E\u0434\u0430 \u043D\u0435\u0442" : "\u0412\u0445\u043E\u0434\u0430 \u043D\u0435\u0442 \u2014 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 dm-tracker login --no-wait");
+      return readCredentials(env) ? 0 : 1;
+  }
 }
 async function doctor(env, print) {
   let ok = true;
@@ -807,19 +900,31 @@ async function main(argv, env = process.env, print = (s) => process.stdout.write
     case "hook": {
       let stdin = "";
       try {
-        stdin = process.stdin.isTTY ? "" : readFileSync7(0, "utf8");
+        stdin = process.stdin.isTTY ? "" : readFileSync8(0, "utf8");
       } catch {
       }
       const out = await runHook(args[0] ?? "", stdin, { env });
       if (out) print(out);
       return 0;
     }
+    // --no-wait: print the link and return at once (an agent's shell shows output only when the command ends);
+    // --status: how that login ended; --resume: the background waiter itself
     case "login":
+      if (args.includes("--status")) return printLoginStatus(env, print);
+      if (args.includes("--resume")) {
+        await resumeLogin({ env, onDone: () => refreshDevMachine(env, () => void 0) });
+        return 0;
+      }
+      if (args.includes("--no-wait")) {
+        await loginNoWait({ server, env, print, spawnWaiter: spawnWaiter(env), ...loginOpts(args) });
+        return 0;
+      }
       await signIn(server, args, env, print);
       return 0;
     case "logout":
       if (creds) await request(`${creds.server}/api/v1/tracker/agent/logout`, { token: creds.token, json: {} }).catch(() => void 0);
       removeCredentials(env);
+      removeLoginState(env);
       print("\u0412\u044B\u0445\u043E\u0434 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D");
       return 0;
     case "install": {
@@ -876,7 +981,7 @@ async function main(argv, env = process.env, print = (s) => process.stdout.write
       print(VERSION);
       return 0;
     default:
-      print("dm-tracker connect --client codex|cursor|devmachine | login | logout | doctor | install --client codex|cursor|devmachine | import gitlab --project <\u041A\u041B\u042E\u0427> --repo <url> | repos connect --project <\u041A\u041B\u042E\u0427> --group <url> | headers | token | hook <event> | --version");
+      print("dm-tracker connect --client codex|cursor|devmachine | login [--no-wait | --status] | logout | doctor | install --client codex|cursor|devmachine | import gitlab --project <\u041A\u041B\u042E\u0427> --repo <url> | repos connect --project <\u041A\u041B\u042E\u0427> --group <url> | headers | token | hook <event> | --version");
       return cmd ? 1 : 0;
   }
 }
